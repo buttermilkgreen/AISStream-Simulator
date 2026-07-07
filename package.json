@@ -1,0 +1,20 @@
+{
+  "name": "ais-simulator",
+  "version": "1.0.0",
+  "description": "Simulated AISStream WebSocket Server and Administration Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "keywords": [
+    "ais",
+    "simulator",
+    "websocket",
+    "mock"
+  ],
+  "author": "",
+  "license": "MIT"
+}

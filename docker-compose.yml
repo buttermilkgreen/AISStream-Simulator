@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  ais-sim:
+    build: .
+    container_name: ais-sim
+    ports:
+      - "8088:8088"
+    restart: unless-stopped
+    environment:
+      - PORT=8088
