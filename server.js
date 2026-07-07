@@ -8,6 +8,36 @@ const PORT = process.env.PORT || 8088;
 // Simulated ship database
 let ships = [
   {
+    mmsi: 992351002,
+    name: "SINGAPORE EAST LIGHT",
+    type: 20, // Aids to navigation
+    vessel_class: "AtoN",
+    lat: 1.25,
+    lon: 104.05,
+    sog: 0.0,
+    cog: 0.0,
+    heading: 511,
+    nav_status: 15,
+    destination: "",
+    imo: 0,
+    callsign: ""
+  },
+  {
+    mmsi: 5630001,
+    name: "SINGAPORE AIS BASE STATION",
+    type: 4, // Base station
+    vessel_class: "BaseStation",
+    lat: 1.32,
+    lon: 103.88,
+    sog: 0.0,
+    cog: 0.0,
+    heading: 511,
+    nav_status: 15,
+    destination: "",
+    imo: 0,
+    callsign: ""
+  },
+  {
     mmsi: 538008272,
     name: "MAERSK MC-KINNEY MOLLER",
     type: 70, // Cargo
@@ -310,6 +340,28 @@ function broadcastState() {
   }
 }
 
+function normalizeBoundingBoxes(rawBoxes) {
+  if (!rawBoxes) return [];
+  if (!Array.isArray(rawBoxes)) return [];
+  
+  // If flat format: [[lat1, lon1], [lat2, lon2]]
+  if (rawBoxes.length === 2 && 
+      Array.isArray(rawBoxes[0]) && rawBoxes[0].length === 2 && 
+      typeof rawBoxes[0][0] === 'number') {
+    return [rawBoxes];
+  }
+  
+  const normalized = [];
+  rawBoxes.forEach(box => {
+    if (Array.isArray(box) && box.length === 2 && 
+        Array.isArray(box[0]) && box[0].length === 2 &&
+        Array.isArray(box[1]) && box[1].length === 2) {
+      normalized.push(box);
+    }
+  });
+  return normalized;
+}
+
 // Helper to check if coordinates are within bounding boxes
 function isWithinBounds(lat, lon, boundingBoxes) {
   if (!boundingBoxes || boundingBoxes.length === 0) return true;
@@ -330,11 +382,21 @@ function isWithinBounds(lat, lon, boundingBoxes) {
   return false;
 }
 
-function isWithinAnyClientBoundsWithBuffer(lat, lon) {
+function isShipNeededByAnyClient(ship) {
   if (activeAISClients.size === 0) return true;
+  
+  // If the ship is static, we always keep it
+  if (ship.vessel_class === "AtoN" || ship.vessel_class === "BaseStation") {
+    return true;
+  }
+
+  // Check if any client has bounding boxes defined
+  let anyClientHasBounds = false;
   for (const client of activeAISClients) {
-    const buffer = 0.03;
     if (client.boundingBoxes && client.boundingBoxes.length > 0) {
+      anyClientHasBounds = true;
+      
+      const buffer = 0.03;
       for (const box of client.boundingBoxes) {
         if (Array.isArray(box) && box.length === 2) {
           const [p1, p2] = box;
@@ -342,14 +404,28 @@ function isWithinAnyClientBoundsWithBuffer(lat, lon) {
           const maxLat = Math.max(p1[0], p2[0]) + buffer;
           const minLon = Math.min(p1[1], p2[1]) - buffer;
           const maxLon = Math.max(p1[1], p2[1]) + buffer;
-          if (lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon) {
+          if (ship.lat >= minLat && ship.lat <= maxLat && ship.lon >= minLon && ship.lon <= maxLon) {
             return true;
           }
         }
       }
     }
   }
+
+  // If no client has bounding boxes defined, then we keep all simulated ships in the background.
+  if (!anyClientHasBounds) {
+    return true;
+  }
+
+  // If there are clients with bounding boxes, but this ship is not in any of them, it is no longer needed.
   return false;
+}
+
+function matchesMessageType(client, msgType) {
+  if (!client.filterMessageTypes || client.filterMessageTypes.length === 0) {
+    return true;
+  }
+  return client.filterMessageTypes.includes(msgType);
 }
 
 // Format an AIS message to client
@@ -449,6 +525,85 @@ function buildAISStaticMessage(ship) {
   return payload;
 }
 
+function buildAISAtoNMessage(ship) {
+  const atonReport = {
+    MessageID: 21,
+    RepeatIndicator: 0,
+    UserID: ship.mmsi,
+    Valid: true,
+    Type: ship.type || 20,
+    Name: ship.name,
+    PositionAccuracy: true,
+    Longitude: ship.lon,
+    Latitude: ship.lat,
+    Dimension: {
+      A: 5,
+      B: 5,
+      C: 2,
+      D: 2
+    },
+    Fixtype: 1,
+    Timestamp: Math.floor((Date.now() / 1000) % 60),
+    OffPosition: false,
+    AtoN: 0,
+    Raim: true,
+    VirtualAtoN: false,
+    AssignedMode: false,
+    Spare: false,
+    NameExtension: ""
+  };
+
+  const payload = {
+    MessageType: "AidsToNavigationReport",
+    MetaData: {
+      MMSI: ship.mmsi,
+      ShipName: ship.name
+    },
+    Message: {
+      AidsToNavigationReport: atonReport
+    }
+  };
+
+  return payload;
+}
+
+function buildAISBaseStationMessage(ship) {
+  const now = new Date();
+  const baseStationReport = {
+    MessageID: 4,
+    RepeatIndicator: 0,
+    UserID: ship.mmsi,
+    Valid: true,
+    UtcYear: now.getUTCFullYear(),
+    UtcMonth: now.getUTCMonth() + 1,
+    UtcDay: now.getUTCDate(),
+    UtcHour: now.getUTCHours(),
+    UtcMinute: now.getUTCMinutes(),
+    UtcSecond: now.getUTCSeconds(),
+    PositionAccuracy: true,
+    Longitude: ship.lon,
+    Latitude: ship.lat,
+    FixType: 1,
+    LongRangeEnable: true,
+    Spare: 0,
+    Raim: true,
+    CommunicationState: 0
+  };
+
+  const payload = {
+    MessageType: "BaseStationReport",
+    MetaData: {
+      MMSI: ship.mmsi,
+      ShipName: ship.name
+    },
+    Message: {
+      BaseStationReport: baseStationReport
+    }
+  };
+
+  return payload;
+}
+
 // Physics & Drift Simulation Loop
 let lastTickTime = Date.now();
 let staticDataCounter = 0;
@@ -492,33 +647,42 @@ setInterval(() => {
 
     // 0.2% chance per second for each ship to "retire" (sail away / cease transmission)
     // to simulate regular ship turnover (approx. 1 ship enters/leaves every 30 seconds for 15 ships at 1x speed)
-    const retireChance = 0.002 * dt;
-    if (Math.random() < retireChance) {
-      ship.is_retired = true;
+    // static structures (AtoN, BaseStation) should never retire
+    if (ship.vessel_class !== "AtoN" && ship.vessel_class !== "BaseStation") {
+      const retireChance = 0.002 * dt;
+      if (Math.random() < retireChance) {
+        ship.is_retired = true;
+      }
     }
   });
 
   // Filter out ships that have gone out of client bounding boxes, global map bounds, or are retired
   ships = ships.filter(ship => {
-    let isOut = false;
-    if (activeAISClients.size > 0) {
-      isOut = !isWithinAnyClientBoundsWithBuffer(ship.lat, ship.lon);
-    } else {
-      const buffer = 0.05;
-      isOut = ship.lat < MAP_BOUNDS.latMin - buffer ||
-              ship.lat > MAP_BOUNDS.latMax + buffer ||
-              ship.lon < MAP_BOUNDS.lonMin - buffer ||
-              ship.lon > MAP_BOUNDS.lonMax + buffer;
+    // Static structures are permanent and should never be filtered out
+    if (ship.vessel_class === "AtoN" || ship.vessel_class === "BaseStation") {
+      return true;
     }
 
     if (ship.is_retired) {
-      isOut = true;
+      addLog('info', `Vessel ${ship.is_unknown_name ? 'Unknown' : ship.name} (MMSI: ${ship.mmsi}) left the simulation area.`);
+      return false;
     }
 
-    if (isOut) {
-      addLog('info', `Vessel ${ship.is_unknown_name ? 'Unknown' : ship.name} (MMSI: ${ship.mmsi}) left the simulation area.`);
+    let needed = true;
+    if (activeAISClients.size > 0) {
+      needed = isShipNeededByAnyClient(ship);
+    } else {
+      const buffer = 0.05;
+      needed = ship.lat >= MAP_BOUNDS.latMin - buffer &&
+               ship.lat <= MAP_BOUNDS.latMax + buffer &&
+               ship.lon >= MAP_BOUNDS.lonMin - buffer &&
+               ship.lon <= MAP_BOUNDS.lonMax + buffer;
     }
-    return !isOut;
+
+    if (!needed) {
+      addLog('info', `Vessel ${ship.is_unknown_name ? 'Unknown' : ship.name} (MMSI: ${ship.mmsi}) left the active client zones.`);
+    }
+    return needed;
   });
 
   // If target count decreased, trim the excess active vessels immediately
@@ -542,25 +706,59 @@ setInterval(() => {
     activeAISClients.forEach(client => {
       if (client.readyState === WebSocket.OPEN && !client.pausedSimulation) {
         ships.forEach(ship => {
-          if (isWithinBounds(ship.lat, ship.lon, client.boundingBoxes)) {
-            // Send position report
-            const posReport = buildAISTelemetryMessage(ship);
-            client.send(JSON.stringify(posReport));
+          // Check MMSI filter
+          if (client.filtersShipMMSI && client.filtersShipMMSI.length > 0) {
+            if (!client.filtersShipMMSI.includes(ship.mmsi.toString())) {
+              return; // Skip this ship
+            }
+          }
 
-            // Send static report if delayed period is met, and periodically every 6 minutes (360s)
-            if (ship.ticks_since_spawn >= ship.static_delay_ticks) {
-              if (!client.sentStaticMMSIs) {
-                client.sentStaticMMSIs = new Set();
-              }
-              
-              const ageSec = Math.floor(ship.ticks_since_spawn);
-              const isPeriodic = (ageSec % 360) < Math.max(1, Math.floor(dt));
-              const hasNotSentYet = !client.sentStaticMMSIs.has(ship.mmsi);
-              
-              if (hasNotSentYet || isPeriodic) {
-                const staticReport = buildAISStaticMessage(ship);
-                client.send(JSON.stringify(staticReport));
-                client.sentStaticMMSIs.add(ship.mmsi);
+          // Check coordinate bounds (if bounding boxes are defined)
+          if (client.boundingBoxes && client.boundingBoxes.length > 0) {
+            if (!isWithinBounds(ship.lat, ship.lon, client.boundingBoxes)) {
+              return; // Skip this ship
+            }
+          }
+
+          // Send message(s) depending on ship type and requested MessageTypes
+          if (ship.vessel_class === "AtoN") {
+            const msgType = "AidsToNavigationReport";
+            if (matchesMessageType(client, msgType)) {
+              const atonReport = buildAISAtoNMessage(ship);
+              client.send(JSON.stringify(atonReport));
+            }
+          } else if (ship.vessel_class === "BaseStation") {
+            const msgType = "BaseStationReport";
+            if (matchesMessageType(client, msgType)) {
+              const baseReport = buildAISBaseStationMessage(ship);
+              client.send(JSON.stringify(baseReport));
+            }
+          } else {
+            // Position Report
+            const posMsgType = ship.vessel_class === "Class B" ? "StandardClassBPositionReport" : "PositionReport";
+            if (matchesMessageType(client, posMsgType)) {
+              const posReport = buildAISTelemetryMessage(ship);
+              client.send(JSON.stringify(posReport));
+            }
+
+            // Ship Static Data Report
+            const staticMsgType = "ShipStaticData";
+            if (matchesMessageType(client, staticMsgType)) {
+              // Send static report if delayed period is met, and periodically every 6 minutes (360s)
+              if (ship.ticks_since_spawn >= ship.static_delay_ticks) {
+                if (!client.sentStaticMMSIs) {
+                  client.sentStaticMMSIs = new Set();
+                }
+                
+                const ageSec = Math.floor(ship.ticks_since_spawn);
+                const isPeriodic = (ageSec % 360) < Math.max(1, Math.floor(dt));
+                const hasNotSentYet = !client.sentStaticMMSIs.has(ship.mmsi);
+                
+                if (hasNotSentYet || isPeriodic) {
+                  const staticReport = buildAISStaticMessage(ship);
+                  client.send(JSON.stringify(staticReport));
+                  client.sentStaticMMSIs.add(ship.mmsi);
+                }
               }
             }
           }
@@ -636,39 +834,78 @@ function handleAISClientConnection(ws, request) {
   ws.on('message', (message) => {
     try {
       const payload = JSON.parse(message.toString());
-      if (payload.APIKey && payload.BoundingBoxes) {
-        ws.boundingBoxes = payload.BoundingBoxes;
-        addLog('success', `Client ${clientId} subscribed to bounding boxes: ${JSON.stringify(payload.BoundingBoxes)}`);
-        
-        // Dynamically re-seed simulated ships to be inside this bounding box if they aren't
-        const box = payload.BoundingBoxes[0];
-        if (Array.isArray(box) && box.length === 2) {
-          const [p1, p2] = box;
-          const minLat = Math.min(p1[0], p2[0]);
-          const maxLat = Math.max(p1[0], p2[0]);
-          const minLon = Math.min(p1[1], p2[1]);
-          const maxLon = Math.max(p1[1], p2[1]);
+      const apiKey = payload.APIKey || payload.ApiKey || payload.apikey;
+      const boundingBoxes = payload.BoundingBoxes || payload.boundingBoxes || payload.boundingboxes;
+      const filtersShipMMSI = payload.FiltersShipMMSI || payload.FiltersShipMmsi || payload.filtersShipMmsi || payload.FiltersByMMSI || payload.filtersByMmsi;
+      const filterMessageTypes = payload.FilterMessageTypes || payload.filterMessageTypes || payload.filtermessagetypes;
 
+      if (apiKey && (boundingBoxes || filtersShipMMSI)) {
+        ws.boundingBoxes = normalizeBoundingBoxes(boundingBoxes);
+        ws.filtersShipMMSI = Array.isArray(filtersShipMMSI) ? filtersShipMMSI.map(m => m.toString()) : [];
+        ws.filterMessageTypes = Array.isArray(filterMessageTypes) ? filterMessageTypes : [];
+
+        let successMsg = `Client ${clientId} subscribed.`;
+        if (ws.boundingBoxes.length > 0) {
+          successMsg += ` Bounding Boxes: ${JSON.stringify(ws.boundingBoxes)}`;
+        }
+        if (ws.filtersShipMMSI.length > 0) {
+          successMsg += ` Filters MMSI: ${JSON.stringify(ws.filtersShipMMSI)}`;
+        }
+        if (ws.filterMessageTypes.length > 0) {
+          successMsg += ` Filters MsgTypes: ${JSON.stringify(ws.filterMessageTypes)}`;
+        }
+        addLog('success', successMsg);
+
+        // Dynamically re-seed simulated ships to be inside client's bounding boxes if they aren't
+        if (ws.boundingBoxes.length > 0) {
           ships.forEach((ship, idx) => {
-            if (!isWithinBounds(ship.lat, ship.lon, [box])) {
-              // Scatter them within the box
-              ship.lat = minLat + (maxLat - minLat) * (0.15 + 0.7 * (idx / ships.length));
-              ship.lon = minLon + (maxLon - minLon) * (0.15 + 0.7 * (((idx + 2) % ships.length) / ships.length));
-              // Clear current SOG if it's Ever Given to keep it anchored, others get a speed
-              if (ship.mmsi !== 311000523) {
-                ship.sog = 10 + (idx % 8);
+            if (!isWithinBounds(ship.lat, ship.lon, ws.boundingBoxes)) {
+              // Pick a bounding box at random to scatter the ship in
+              const box = ws.boundingBoxes[idx % ws.boundingBoxes.length];
+              if (Array.isArray(box) && box.length === 2) {
+                const [p1, p2] = box;
+                const minLat = Math.min(p1[0], p2[0]);
+                const maxLat = Math.max(p1[0], p2[0]);
+                const minLon = Math.min(p1[1], p2[1]);
+                const maxLon = Math.max(p1[1], p2[1]);
+
+                // Scatter it within this box
+                ship.lat = minLat + (maxLat - minLat) * (0.15 + 0.7 * Math.random());
+                ship.lon = minLon + (maxLon - minLon) * (0.15 + 0.7 * Math.random());
+                
+                // Clear current SOG if it's Ever Given or static structures
+                if (ship.mmsi !== 311000523 && ship.vessel_class !== "AtoN" && ship.vessel_class !== "BaseStation") {
+                  ship.sog = 10 + (idx % 8);
+                }
               }
             }
           });
 
-          // Adjust MAP_BOUNDS to frame this bounding box on the admin radar dashboard
-          MAP_BOUNDS = {
-            latMin: minLat - 0.02,
-            latMax: maxLat + 0.02,
-            lonMin: minLon - 0.02,
-            lonMax: maxLon + 0.02
-          };
-          addLog('info', `Dashboard map reframed to: Lat [${MAP_BOUNDS.latMin.toFixed(2)}, ${MAP_BOUNDS.latMax.toFixed(2)}], Lon [${MAP_BOUNDS.lonMin.toFixed(2)}, ${MAP_BOUNDS.lonMax.toFixed(2)}]`);
+          // Adjust MAP_BOUNDS to frame ALL bounding boxes combined
+          let minLat = Infinity, maxLat = -Infinity;
+          let minLon = Infinity, maxLon = -Infinity;
+          let validBoxes = 0;
+
+          ws.boundingBoxes.forEach(box => {
+            if (Array.isArray(box) && box.length === 2) {
+              const [p1, p2] = box;
+              minLat = Math.min(minLat, p1[0], p2[0]);
+              maxLat = Math.max(maxLat, p1[0], p2[0]);
+              minLon = Math.min(minLon, p1[1], p2[1]);
+              maxLon = Math.max(maxLon, p1[1], p2[1]);
+              validBoxes++;
+            }
+          });
+
+          if (validBoxes > 0) {
+            MAP_BOUNDS = {
+              latMin: minLat - 0.02,
+              latMax: maxLat + 0.02,
+              lonMin: minLon - 0.02,
+              lonMax: maxLon + 0.02
+            };
+            addLog('info', `Dashboard map reframed around all ${validBoxes} client bounding boxes.`);
+          }
         }
 
         activeAISClients.add(ws);
@@ -1507,8 +1744,10 @@ function getDashboardHTML() {
       boundsRectangles.forEach(rect => map.removeLayer(rect));
       boundsRectangles = [];
 
+      let hasActiveBoxes = false;
       simulationData.activeConnections.forEach(conn => {
         if (conn.boundingBoxes && conn.boundingBoxes.length > 0) {
+          hasActiveBoxes = true;
           conn.boundingBoxes.forEach(box => {
             if (box.length === 2) {
               const r = L.rectangle([[box[0][0], box[0][1]], [box[1][0], box[1][1]]], {
@@ -1522,6 +1761,18 @@ function getDashboardHTML() {
           });
         }
       });
+
+      // If no client subscriptions with coordinates exist, draw the default simulator area boundary
+      if (!hasActiveBoxes && simulationData.MAP_BOUNDS) {
+        const bounds = simulationData.MAP_BOUNDS;
+        const r = L.rectangle([[bounds.latMin, bounds.lonMin], [bounds.latMax, bounds.lonMax]], {
+          color: '#00f0ff', // Neon blue for the simulator boundaries
+          weight: 1.5,
+          fillOpacity: 0.01,
+          dashArray: '5, 8'
+        }).addTo(map);
+        boundsRectangles.push(r);
+      }
 
       // 2. Clear Markers of ships no longer in simulation
       const currentMmsis = new Set(simulationData.ships.map(s => s.mmsi));
@@ -1538,14 +1789,41 @@ function getDashboardHTML() {
         
         // Dims ships to 15% opacity when the stream is simulated empty to show they are muted
         const opacity = simulationData.emptyStreamActive ? 0.15 : 1.0;
-        const color = ship.vessel_class === "Class B" ? "#00ff66" : "#00f0ff";
         
-        const svgHtml = \`
-          <svg class="ship-icon" width="20" height="20" viewBox="0 0 24 24" style="transform: rotate(\${rotation}deg); overflow: visible;">
-            <path d="M12,2L16,10L13,9L12,24L11,9L8,10Z" fill="\${color}" opacity="\${opacity}"/>
-            <circle cx="12" cy="12" r="3.5" fill="#fff" opacity="\${opacity}"/>
-          </svg>
-        \`;
+        let color = "#00f0ff"; // default Class A
+        if (ship.vessel_class === "Class B") {
+          color = "#00ff66";
+        } else if (ship.vessel_class === "AtoN") {
+          color = "#ffaa00";
+        } else if (ship.vessel_class === "BaseStation") {
+          color = "#ffffff";
+        }
+
+        let svgHtml = "";
+        if (ship.vessel_class === "AtoN") {
+          svgHtml = \`
+            <svg class="ship-icon" width="20" height="20" viewBox="0 0 24 24" style="overflow: visible;">
+              <polygon points="12,2 22,12 12,22 2,12" fill="\${color}" opacity="\${opacity}"/>
+              <circle cx="12" cy="12" r="3" fill="#000" opacity="\${opacity}"/>
+            </svg>
+          \`;
+        } else if (ship.vessel_class === "BaseStation") {
+          svgHtml = \`
+            <svg class="ship-icon" width="20" height="20" viewBox="0 0 24 24" style="overflow: visible;">
+              <circle cx="12" cy="12" r="8" stroke="\${color}" stroke-width="2" fill="none" opacity="\${opacity}"/>
+              <line x1="12" y1="4" x2="12" y2="20" stroke="\${color}" stroke-width="2" opacity="\${opacity}"/>
+              <line x1="4" y1="12" x2="20" y2="12" stroke="\${color}" stroke-width="2" opacity="\${opacity}"/>
+              <circle cx="12" cy="12" r="2.5" fill="\${color}" opacity="\${opacity}"/>
+            </svg>
+          \`;
+        } else {
+          svgHtml = \`
+            <svg class="ship-icon" width="20" height="20" viewBox="0 0 24 24" style="transform: rotate(\${rotation}deg); overflow: visible;">
+              <path d="M12,2L16,10L13,9L12,24L11,9L8,10Z" fill="\${color}" opacity="\${opacity}"/>
+              <circle cx="12" cy="12" r="3.5" fill="#fff" opacity="\${opacity}"/>
+            </svg>
+          \`;
+        }
 
         const icon = L.divIcon({
           html: svgHtml,
@@ -1554,15 +1832,35 @@ function getDashboardHTML() {
           iconAnchor: [10, 10]
         });
 
-        const statusStr = NAV_STATUS_MAP[ship.nav_status] || "Unknown";
-        const labelText = \`
-          <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; line-height: 1.3;">
-            <strong style="color: \${color};">\${ship.name}</strong><br/>
-            MMSI: \${ship.mmsi}<br/>
-            Speed: \${ship.sog} kn | Heading: \${ship.heading}°<br/>
-            Status: \${statusStr}
-          </div>
-        \`;
+        let labelText = "";
+        if (ship.vessel_class === "AtoN") {
+          labelText = \`
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; line-height: 1.3;">
+              <strong style="color: \${color};">\${ship.name}</strong><br/>
+              MMSI (AtoN): \${ship.mmsi}<br/>
+              Type: Aids to Navigation (\${ship.type})<br/>
+              Position: \${ship.lat.toFixed(4)}, \${ship.lon.toFixed(4)}
+            </div>
+          \`;
+        } else if (ship.vessel_class === "BaseStation") {
+          labelText = \`
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; line-height: 1.3;">
+              <strong style="color: \${color};">\${ship.name}</strong><br/>
+              MMSI (Base Station): \${ship.mmsi}<br/>
+              Position: \${ship.lat.toFixed(4)}, \${ship.lon.toFixed(4)}
+            </div>
+          \`;
+        } else {
+          const statusStr = NAV_STATUS_MAP[ship.nav_status] || "Unknown";
+          labelText = \`
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; line-height: 1.3;">
+              <strong style="color: \${color};">\${ship.name}</strong><br/>
+              MMSI: \${ship.mmsi}<br/>
+              Speed: \${ship.sog} kn | Heading: \${ship.heading}°<br/>
+              Status: \${statusStr}
+            </div>
+          \`;
+        }
 
         if (shipMarkers[ship.mmsi]) {
           shipMarkers[ship.mmsi].setLatLng([ship.lat, ship.lon]);
