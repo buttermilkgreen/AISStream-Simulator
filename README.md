@@ -16,7 +16,7 @@ A simulated, standalone WebSocket server and interactive visual administration d
   - **Simulate Empty Stream**: Halts transmission of shipping packets to clients (making them look like an empty ocean) while still keeping the socket connection open. Perfect for testing "Silent Failure" watchdogs.
   - **Simulate Authentication Failure**: Rejects incoming client subscriptions with authentication error payloads and disconnects them.
   - **Drop Active Clients**: Simulates abrupt network drops (like code `1006` via TCP termination) or graceful close frames (like code `1000` or `1008`).
-  - **Custom Ship Injection Form**: Instantly spawns and broadcasts a custom vessel with your chosen MMSI, name, coords, and speed.
+  - **Custom Ship Injection Form**: Instantly spawns and broadcasts a custom vessel with your chosen MMSI, name, coords, and speed. 
 
 ---
 
